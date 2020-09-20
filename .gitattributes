@@ -1,0 +1,1 @@
+blaseball_playground/data/files/*.json filter=lfs diff=lfs merge=lfs -text

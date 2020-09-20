@@ -1,0 +1,12 @@
+# IDE
+.idea/
+
+# log files
+/logs/
+/wandb/
+
+# data files (for LFS?)
+# /blaseball_playground/data/files/
+
+# assorted python stuff
+*.py[c, o, d, x]
