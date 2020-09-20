@@ -9,6 +9,32 @@ import pandas as pd
 import tqdm
 
 
+def season_day_to_datetime(season, day):
+    season_start_dates = {
+        0:  np.datetime64('2020-07-20'),
+        1:  np.datetime64('2020-07-27'),
+        2:  np.datetime64('2020-08-03'),
+        3:  np.datetime64('2020-08-24'),
+        4:  np.datetime64('2020-08-31'),
+        5:  np.datetime64('2020-09-07'),
+        6:  np.datetime64('2020-09-14'),
+        7:  np.datetime64('2020-09-21'),
+        8:  np.datetime64('2020-09-28'),
+        9:  np.datetime64('2020-10-05'),
+        10: np.datetime64('2020-10-12'),
+    }
+
+    dt = season_start_dates[season] + np.timedelta64(5, 'h')  # adjusting for est
+
+    if day <= 100:  # on season games
+        dt += np.timedelta64(day, 'h')
+    else:
+        dt += np.timedelta64(6, 'D')  # move time to saturday
+        dt += np.timedelta64(day - 100, 'h')
+
+    return dt
+
+
 class Game:
     def __init__(self,
                  game,
@@ -20,7 +46,9 @@ class Game:
                  away_team_offense,
                  away_team_defense,
                  home_team_offense,
-                 home_team_defense):
+                 home_team_defense,
+                 relevant_stats,
+                 ):
         self.id = game['id']
         self.rules = game['rules']
         self.statsheet = game['statsheet']
@@ -36,39 +64,79 @@ class Game:
         self.homeScore = game['homeScore']
         self.season = game['season']
         self.day = game['day']
+        self.game_datetime = season_day_to_datetime(self.season, self.day)
+        self.relevant_stats = relevant_stats
 
-        self.awayTeamOffense = calc_avg_stats(away_team_offense)
-        self.awayTeamDefense = calc_avg_stats(away_team_defense)
-        self.homeTeamOffense = calc_avg_stats(home_team_offense)
-        self.homeTeamDefense = calc_avg_stats(home_team_defense)
+        self.valid = True
+
+        self.awayTeamOffense = self.calc_avg_stats(away_team_offense)
+        self.awayTeamDefense = self.calc_avg_stats(away_team_defense)
+        self.homeTeamOffense = self.calc_avg_stats(home_team_offense)
+        self.homeTeamDefense = self.calc_avg_stats(home_team_defense)
 
     def __repr__(self):
         return f'<Game {self.homeTeamNickname} vs {self.awayTeamNickname}: {self.homeScore}-{self.awayScore}>'
 
     def to_dict(self):
-        return {
-            'away_score': self.awayScore,
-            'away_offense_batting': self.awayTeamOffense['batting_rating'],
-            'away_offense_base': self.awayTeamOffense['baserunning_rating'],
-            'away_offense_defense': self.awayTeamOffense['defense_rating'],
-            'away_offense_pitch': self.awayTeamOffense['pitching_rating'],
-            'away_defense_batting': self.awayTeamOffense['batting_rating'],
-            'away_defense_base': self.awayTeamOffense['baserunning_rating'],
-            'away_defense_defense': self.awayTeamOffense['defense_rating'],
-            'away_defense_pitch': self.awayTeamOffense['pitching_rating'],
-            'home_score': self.homeScore,
-            'home_offense_batting': self.homeTeamOffense['batting_rating'],
-            'home_offense_base': self.homeTeamOffense['baserunning_rating'],
-            'home_offense_defense': self.homeTeamOffense['defense_rating'],
-            'home_offense_pitch': self.homeTeamOffense['pitching_rating'],
-            'home_defense_batting': self.homeTeamOffense['batting_rating'],
-            'home_defense_base': self.homeTeamOffense['baserunning_rating'],
-            'home_defense_defense': self.homeTeamOffense['defense_rating'],
-            'home_defense_pitch': self.homeTeamOffense['pitching_rating'],
-        }
+
+        scores = {'away_score': self.awayScore, 'home_score': self.homeScore}
+        away_offense = {'away_offense_'+stat: self.awayTeamOffense[stat] for stat in self.relevant_stats}
+        away_defense = {'away_defense_'+stat: self.awayTeamDefense[stat] for stat in self.relevant_stats}
+        home_offense = {'home_offense_'+stat: self.homeTeamOffense[stat] for stat in self.relevant_stats}
+        home_defense = {'home_defense_'+stat: self.homeTeamDefense[stat] for stat in self.relevant_stats}
+
+        out = {}
+        out.update(scores)
+        out.update(away_offense)
+        out.update(away_defense)
+        out.update(home_offense)
+        out.update(home_defense)
+
+        return out
+
+    def calc_player_stats(self, player_statsheet, player_fk):
+        player_fk = pd.DataFrame(player_fk, columns=['valid_from', 'valid_until'] + self.relevant_stats)[
+            ['valid_from', 'valid_until'] + self.relevant_stats]
+        player_fk['valid_from'] = pd.to_datetime(player_fk['valid_from'])
+        player_fk['valid_until'] = pd.to_datetime(player_fk['valid_until'])
+        for stat in self.relevant_stats:
+            player_fk[stat] = player_fk[stat].astype(np.float64)
+
+        return player_fk.mean()
+
+    def calc_avg_stats(self, players):
+        if len(players) == 0:
+            self.valid = False
+            return {stat: 0 for stat in self.relevant_stats}
+        player_fks = []
+        for statsheet, forbidden in players:
+            if len(forbidden) == 0:
+                self.valid = False
+                return {stat: 0 for stat in self.relevant_stats}
+            forbidden.sort(key=lambda x: np.datetime64(x['valid_from']))
+            for fk in forbidden:
+                if fk['valid_until'] is None:
+                    fk['valid_until'] = np.datetime64('now')
+            valid_from = np.array([fk['valid_from'] for fk in forbidden], dtype=np.datetime64)
+            # valid_until = np.array([fk['valid_until'] for fk in forbidden], dtype=np.datetime64)
+            if self.game_datetime < valid_from[0]:
+                fk = forbidden[0]
+                self.valid = False
+            for fk in forbidden:
+                if self.game_datetime >= np.datetime64(fk['valid_from']):
+                    break
+            player_fks.append(fk)
+
+        out = {stat: 0 for stat in self.relevant_stats}
+
+        for fk in player_fks:
+            for stat in self.relevant_stats:
+                out[stat] += float(fk[stat])/len(player_fks)
+
+        return out
 
 
-RELEVANT_STATS = [
+STAR_STATS = [
     'batting_rating',
     'baserunning_rating',
     'defense_rating',
@@ -76,39 +144,35 @@ RELEVANT_STATS = [
 ]
 
 
-def calc_player_stats(player_statsheet, player_fk):
-    player_fk = pd.DataFrame(player_fk, columns=['valid_from', 'valid_until'] + RELEVANT_STATS)[['valid_from', 'valid_until'] + RELEVANT_STATS]
-    player_fk['valid_from'] = pd.to_datetime(player_fk['valid_from'])
-    player_fk['valid_until'] = pd.to_datetime(player_fk['valid_until'])
-    for stat in RELEVANT_STATS:
-        player_fk[stat] = player_fk[stat].astype(np.float64)
+FORBIDDEN_STATS = [
+    'base_thirst',
+    'continuation',
+    'ground_friction',
+    'indulgence',
+    'laserlikeness',
 
-    return player_fk.mean()
+    'anticapitalism',
+    'chasiness',
+    'omniscience',
+    'tenaciousness',
+    'watchfulness',
 
+    'buoyancy',
+    'divinity',
+    'martyrdom',
+    'moxie',
+    'musclitude',
+    'patheticism',
+    'thwackability',
+    'tragicness',
 
-def calc_avg_stats(players):
-    if len(players) == 0:
-        return {stat: 0 for stat in RELEVANT_STATS}
-    statsheets, forbidden = zip(*players)
-    count = 0.
-    out = {stat: 0 for stat in RELEVANT_STATS}
-    for fk in itertools.chain(*forbidden):
-        for stat in RELEVANT_STATS:
-            out[stat] += float(fk[stat])
-        count += 1
-    for stat in RELEVANT_STATS:
-        out[stat] /= count
-
-    return out
-
-    # forbidden = pd.DataFrame(itertools.chain(*forbidden))[['valid_from', 'valid_until'] + RELEVANT_STATS]
-    # forbidden['valid_from'] = pd.to_datetime(forbidden['valid_from'])
-    # forbidden['valid_until'] = pd.to_datetime(forbidden['valid_until'])
-    # for stat in RELEVANT_STATS:
-    #     forbidden[stat] = forbidden[stat].astype(np.float64)
-    # return dict(forbidden[RELEVANT_STATS].mean())
-    # player_stats = [calc_player_stats(*player) for player in players]
-    # return pd.DataFrame(player_stats).mean()
+    'coldness',
+    'overpowerment',
+    'ruthlessness',
+    'shakespearianism',
+    'suppression',
+    'unthwackability',
+]
 
 
 def get_season_info():
@@ -255,7 +319,7 @@ def get_players(player_ids, ):
     return players
 
 
-def make_games(games, game_statsheets, team_statsheets, player_statsheets, player_dict):
+def make_games(games, game_statsheets, team_statsheets, player_statsheets, player_dict, relevant_stats):
     game_statsheets = {game_statsheet['id']: game_statsheet for game_statsheet in game_statsheets}
     team_statsheets = {team_statsheet['id']: team_statsheet for team_statsheet in team_statsheets}
     player_statsheets = {player_statsheet['id']: player_statsheet for player_statsheet in player_statsheets}
@@ -291,10 +355,11 @@ def make_games(games, game_statsheets, team_statsheets, player_statsheets, playe
                               away_team_offense,
                               away_team_defense,
                               home_team_offense,
-                              home_team_defense))
+                              home_team_defense,
+                              relevant_stats,
+                              ))
 
-
-    return pd.DataFrame([game_obj.to_dict() for game_obj in game_objs])
+    return pd.DataFrame([game_obj.to_dict() for game_obj in game_objs if game_obj.valid])
 
 
 def main():
@@ -327,9 +392,12 @@ def main():
     players = get_players(player_ids)
     player_dict = {pid: [p for p in players if p['player_id'] == pid] for pid in tqdm.tqdm(player_ids)}
 
-    game_stats = make_games(games, game_statsheets, team_statsheets, player_statsheets, player_dict)
+    star_game_stats = make_games(games, game_statsheets, team_statsheets, player_statsheets, player_dict, STAR_STATS)
+    star_game_stats.to_csv('./blaseball_playground/data/files/star_game_stats.csv')
 
-    return game_stats
+    forbidden_game_stats = make_games(games, game_statsheets, team_statsheets, player_statsheets, player_dict, FORBIDDEN_STATS)
+    forbidden_game_stats.to_csv('./blaseball_playground/data/files/forbidden_game_stats.csv')
+
 
 if __name__ == '__main__':
     main()
