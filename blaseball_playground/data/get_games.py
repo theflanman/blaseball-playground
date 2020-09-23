@@ -79,18 +79,16 @@ class Game:
 
     def to_dict(self):
 
-        scores = {'away_score': self.awayScore, 'home_score': self.homeScore}
-        away_offense = {'away_offense_'+stat: self.awayTeamOffense[stat] for stat in self.relevant_stats}
-        away_defense = {'away_defense_'+stat: self.awayTeamDefense[stat] for stat in self.relevant_stats}
-        home_offense = {'home_offense_'+stat: self.homeTeamOffense[stat] for stat in self.relevant_stats}
-        home_defense = {'home_defense_'+stat: self.homeTeamDefense[stat] for stat in self.relevant_stats}
+        out = {'away_score': self.awayScore, 'home_score': self.homeScore}
 
-        out = {}
-        out.update(scores)
-        out.update(away_offense)
-        out.update(away_defense)
-        out.update(home_offense)
-        out.update(home_defense)
+        for i, player in enumerate(self.awayTeamOffense):
+            out.update({f'away_offense_{i}_{stat}': player[stat] for stat in self.relevant_stats})
+        for i, player in enumerate(self.awayTeamDefense):
+            out.update({f'away_defense_{i}_{stat}': player[stat] for stat in self.relevant_stats})
+        for i, player in enumerate(self.homeTeamOffense):
+            out.update({f'home_offense_{i}_{stat}': player[stat] for stat in self.relevant_stats})
+        for i, player in enumerate(self.homeTeamDefense):
+            out.update({f'home_defense_{i}_{stat}': player[stat] for stat in self.relevant_stats})
 
         return out
 
@@ -125,13 +123,13 @@ class Game:
             for fk in forbidden:
                 if self.game_datetime >= np.datetime64(fk['valid_from']):
                     break
-            player_fks.append(fk)
+            player_fks.append({stat:fk[stat] for stat in self.relevant_stats})
 
-        out = {stat: 0 for stat in self.relevant_stats}
+        out = player_fks
 
-        for fk in player_fks:
-            for stat in self.relevant_stats:
-                out[stat] += float(fk[stat])/len(player_fks)
+        # for fk in player_fks:
+        #     for stat in self.relevant_stats:
+        #         out[stat] += float(fk[stat])/len(player_fks)
 
         return out
 
